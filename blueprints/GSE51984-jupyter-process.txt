@@ -1,0 +1,535 @@
+
+
+===== CELL 1 (MARKDOWN) =====
+
+# GSE Processing Jupyter Notebook
+
+Description: Use this Jupyter notebook to create the necessary Hegemon files for datasets from GEO
+
+===== CELL 2 (MARKDOWN) =====
+
+## Import Statements
+
+===== CELL 3 (CODE) =====
+
+%xmode Verbose
+import GEOparse
+from IPython.display import display
+import pandas as pd
+import os
+import re
+import numpy as np
+import scanpy as sc
+import glob
+from anndata import AnnData
+
+print_progress = False
+
+===== CELL 4 (MARKDOWN) =====
+
+## GEO Parameters
+Fill out parameters using dataset page on GEO website
+
+===== CELL 5 (CODE) =====
+
+accessionID = 'GSE51984'           # GSE ID
+experimentType = 'rna'        # m or rna      (microarray or RNA-Seq)
+norm = 'cpm'                  # cpm/None  Need to normalize data
+takeLog = 'True'             # True/False    need to take log of data (data is not log normalized yet)
+
+if experimentType == 'rna':
+    sep_rna_files = 'True'
+
+# ---------------------------------------------
+    
+if accessionID == '' or experimentType == '' or norm == '' or takeLog == '':
+    raise TypeError('Enter GEO parameters in lines 1-4 of this code block')
+if experimentType == 'rna' and sep_rna_files == '':
+    raise TypeError('Check if provided expression is in a single file or separate files (GSE###_RAW.tar)')
+
+# Download and/or load GEO Dataset
+gse = GEOparse.get_GEO(geo=accessionID)
+
+===== CELL 6 (MARKDOWN) =====
+
+### Parameter Check
+
+===== CELL 7 (CODE) =====
+
+print('GEO Accession ID:\t\033[1m',accessionID)
+print('https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=%s\n'%accessionID)
+
+# Platform ID
+if len(gse.metadata['platform_id']) != 1:
+    raise TypeError('Multiple GPL platforms available for this dataset: use process.py to process this dataset')
+
+gpl = gse.gpls[gse.metadata['platform_id'][0]]
+print('\033[0mPlatform ID:\t\t\033[1m', gpl.name)
+
+file_prefix = f'{accessionID}-{gpl.name}'
+
+# Experiment Type
+if ((gse.metadata['type'] == ['Expression profiling by array'] and experimentType != 'm') or 
+    (gse.metadata['type'] == ['Expression profiling by high throughput sequencing'] and experimentType != 'rna')):
+    raise TypeError('Check Experiment Type')
+    
+print('\033[0mExperiment Type:\t\033[1m', gse.metadata['type'][0])
+
+gsm = gse.gsms[gse.metadata['sample_id'][0]]
+
+# Normalization
+if (experimentType == 'm' and ('RMA' in gsm.columns.loc['VALUE', 'description'] or 
+                               'Normalized' in gsm.columns.loc['VALUE', 'description']) and norm != 'None'):
+    raise TypeError('Check normalization parameter (norm) to make sure it matches the dataset')
+else:
+    print(f'\033[0mnorm:\t\t\t\033[1m {norm}')
+
+# Log
+if experimentType == 'm' and 'log2' in gsm.columns.loc['VALUE', 'description'] and takeLog == True:
+    raise TypeError('Check takeLog parameter to make sure it matches the dataset')
+else:
+    print(f'\033[0mtakeLog:\t\t\033[1m {takeLog}')
+
+
+===== CELL 8 (MARKDOWN) =====
+
+## Generate Survival / IH file
+
+===== CELL 9 (CODE) =====
+
+survival_df = None
+ih_dict = {'ArrayID':[], 'ArrayHeader':[], 'ClinicalHeader':[]}
+num_samples = len(gse.gsms.items())
+for i, (name, gsm) in enumerate(gse.gsms.items()):
+    if print_progress:
+        print(f"{name} \t {i+1}/{num_samples}") 
+    gsm_meta = {}
+    gsm_meta['ArrayId'] = name
+    gsm_meta['time'] = ''
+    gsm_meta['status'] = ''
+
+    ih_dict['ArrayID'].append(name)
+    ih_dict['ArrayHeader'].append(name)
+    ih_dict['ClinicalHeader'].append(gsm.metadata['title'][0])
+
+    remaining_cols = {}
+    for col, val in gsm.metadata.items():
+        used = False
+        # Metadata columns
+        if col == 'title' or '_ch' in col:
+            
+            # Only keeping cols that don't have protocol and label -> not needed
+            if 'protocol' not in col and 'label' not in col and 'channel_count' not in col:
+                used = True
+                # Sometimes all metadata in characteristics column, so need to split (ex age: 17, gender: male)
+                if ':' in val[0]:
+                    for v in val:
+                        # Split on ':' so everything before ':' is a new col and after ':' is the value
+                        new_val = v.split(': ')
+                        if len(new_val) == 2:
+                            gsm_meta['c '+ new_val[0]+'_ch1'] = new_val[1]
+                        else:
+                            gsm_meta['c '+new_val[0][:-1]+'_ch1'] = 'N/A' 
+                else:
+                    gsm_meta['c '+ col] = val
+         
+        if not used:
+            remaining_cols[col] = val
+        
+        # If need to add extra survival information
+        # Ex:
+        # meta_df['c description'] = meta_df['description']
+
+    if survival_df is None:
+        survival_df = pd.DataFrame(gsm_meta)
+    else:
+        temp_df = pd.DataFrame(gsm_meta)
+        survival_df = survival_df.append(temp_df, sort=False)
+
+===== CELL 10 (MARKDOWN) =====
+
+### Save survival file
+
+===== CELL 11 (CODE) =====
+
+survival_file_name = f'{accessionID}-{gpl.name}-survival.txt'
+print('Saving survival_df to:', survival_file_name)
+display(survival_df)
+survival_df.to_csv(survival_file_name, index=False, sep='\t')
+
+===== CELL 12 (MARKDOWN) =====
+
+### Save ih file
+
+===== CELL 13 (CODE) =====
+
+ih_df = pd.DataFrame(ih_dict)
+ih_file_name = f'{accessionID}-{gpl.name}-ih.txt'
+print('Saving IH file to:', ih_file_name)
+display(ih_df)
+ih_df.to_csv(ih_file_name, index=False, sep='\t')
+
+===== CELL 14 (MARKDOWN) =====
+
+## Microarray Expr
+
+===== CELL 15 (MARKDOWN) =====
+
+### Get expression for samples
+
+===== CELL 16 (CODE) =====
+
+if experimentType == 'm':
+    gse_df = None
+    num_rows = 0
+    platform_id = 0
+    for i, (name, gsm) in enumerate(gse.gsms.items()):
+        if gsm.metadata['platform_id'][platform_id] != gpl.name:
+            continue
+
+        if False:
+            print(f"{name} \t {i+1}/{num_samples}") 
+
+        #column = gsm.table['VALUE']
+        gsm.table = gsm.table.rename(columns={'VALUE':name})
+        if gse_df is None:
+            gse_df = gsm.table
+        else:
+            gse_df = gse_df.merge(gsm.table, how='outer', on='ID_REF')
+
+    gse_df = gse_df.replace(np.NaN, 0)
+        
+    if takeLog == 'True':
+        print('Taking log2 of normalized data')
+        gse_df.iloc[:,1:] = gse_df.iloc[:,1:].apply(lambda x: np.log2(x+1))
+    
+    gse_df = gse_df.rename(columns={'ID_REF':'ID'})
+
+    gse_df.to_csv(f'{accessionID}-gse_withid-{gpl.name}.txt', header=True, index=False, sep='\t')
+
+else:
+    print("experimentType = 'rna': Use other cell block for RNA-Seq")
+
+===== CELL 17 (MARKDOWN) =====
+
+### Get gene names from GPL table
+
+===== CELL 18 (CODE) =====
+
+# GPL Table
+if experimentType == 'm':
+    if 'gene_assignment'in gpl.table.columns:
+        lst = gpl.table['gene_assignment']
+        for l in lst:
+            if l != '---':
+                l = str(l)
+                x = [y.split(' // ') for y in l.split(' /// ')]
+                col_title.append(" /// ".join(i[2] if len(i) > 2 else "ERR" for i in x))
+                col_symbol.append(" /// ".join(i[1] if len(i) > 2 else "ERR" for i in x))
+            else:
+                col_symbol.append("---")
+                col_title.append("---")
+
+    if 'gene_assignment'in gpl.table.columns:
+        gpl.table['Symbol'] = col_symbol
+        gpl.table['Definition'] = col_title
+
+
+    # Get Name and Definition columns
+    gpl.table=gpl.table.rename(columns = {'GeneSymbol':'Symbol', 'Gene Symbol':'Symbol', 'gene symbol':'Symbol',
+                                          'GENE_SYMBOL': 'Symbol', 'GENE_SYM': 'Symbol', 'Gene_Name': 'Symbol',
+                                          'geneName':'Definition', 'Gene Name':'Definition', 
+                                          'Gene Title':'Definition', 'Gene Description': 'Definition', 
+                                          'Description': 'Definition', 'DESCRIPTION': 'Definition', 
+                                          'description': 'Definition', 'Gene_Desc':'Definition'})
+
+    if 'Definition' not in gpl.table.columns and 'Symbol' in gpl.table.columns:
+        gpl.table['Definition'] = gpl.table['Symbol']
+
+    name_def_set = True
+    if 'Symbol' not in gpl.table.columns:
+        name_def_set = False
+        raise TypeError("""Symbol not in gpl.table.columns. Select the correct column and add it to the
+                        column renaming section (lines 22-27)""")
+        
+    gpl.table.to_csv(f'{file_prefix}.txt', header=True, index=False, sep='\t')
+    
+else:
+    print("experimentType = 'rna': Use other cell block for RNA-Seq")
+
+===== CELL 19 (MARKDOWN) =====
+
+### Generate expr file
+
+===== CELL 20 (CODE) =====
+
+if experimentType == 'm':
+    gpl_df = gpl.table[['ID', 'Symbol', 'Definition']]
+    data_expr = gpl_df.merge(gse_df, how='right', on='ID')
+    data_expr.insert(1, 'Name', data_expr['Symbol'] + ':' + data_expr['Definition'])
+    del data_expr['Symbol']
+    del data_expr['Definition']
+
+    data_expr = data_expr.rename({'ID':'ProbeID'},axis=1)
+    
+    data_expr.to_csv(f'{accessionID}-{gpl.name}-expr.txt', header=True, index=False, sep='\t')
+
+    display(data_expr.head())
+
+else:
+    print("\033[1mexperimentType = 'rna': Use other cell block for RNA-Seq")
+
+===== CELL 21 (MARKDOWN) =====
+
+## RNA-Seq Expr
+Download expression file(s) (***wget [ftp link]***) and rename using to the following:
+- separate files: untar folder (***tar -xf GSE###_RAW.tar***) and make sure name of directory with files is ***GSE###_RAW***
+- single file: unzip file (gunzip if .gz) if needed
+
+===== CELL 22 (MARKDOWN) =====
+
+### Separate files
+If the next code block takes increasingly longer each iteration of the for loop, the files are not being read correctly with pd.read_csv(). Stop the code block from continuing to run and use the following codeblock to debug your code.
+
+===== CELL 23 (CODE) =====
+
+df = pd.read_csv('GSE51984_RAW/GSM1256809_0_01_RPKM.txt.gz',sep='\t')
+df
+
+===== CELL 24 (CODE) =====
+
+if experimentType == 'rna' and sep_rna_files == 'True':
+    files = glob.glob(f'{accessionID}_RAW/*.txt.gz')
+    print('j', files)
+    df = None
+    for i,f in enumerate(files):
+        print(i+1,'/',len(files))
+        arr = re.sub(".*(GSM[0-9]+).*", "\\1", f)
+        df1 = pd.read_csv(f, sep="\t", names=['ProbeID', arr])
+        df1 = df1[~df1['ProbeID'].isin(['no_feature', 'ambiguous', 'too_low_aQual', 'not_aligned', 
+                                        'alignment_not_unique'])]
+        if df is None:
+            df = df1
+        else:
+            if arr in df.columns:
+                df[arr] += df1[arr]
+            else:
+                df = df.merge(df1, 'outer', on='ProbeID')
+                
+    # Add gene names
+    scaff_path = '/booleanfs2/sahoo/Data/SeqData/genome/'
+    if df['ProbeID'].str.contains('ENSG').any():
+        gene_names = pd.read_csv(scaff_path+'Homo_sapiens.GRCh38.94.chr_patch_hapl_scaff.t.txt', 
+                                 sep='\t', names=['ProbeID', 'Name'], usecols=[1,2])
+    elif df['ProbeID'].str.contains('ENST').any():
+        gene_names = pd.read_csv(scaff_path+'Homo_sapiens.GRCh38.94.chr_patch_hapl_scaff.t.txt', 
+                                 sep='\t', names=['ProbeID', 'Name'], usecols=[0,2])
+
+    elif df['ProbeID'].str.contains('ENSMUST').any():
+        gene_names = pd.read_csv(scaff_path+'Mus_musculus.GRCm38.94.chr_patch_hapl_scaff.t.txt', 
+                                 sep='\t', names=['ProbeID', 'Name'], usecols=[0,2])
+
+    elif df['ProbeID'].str.contains('ENSMUSG').any():
+        gene_names = pd.read_csv(scaff_path+'Mus_musculus.GRCm38.94.chr_patch_hapl_scaff.t.txt', 
+                                 sep='\t', names=['ProbeID', 'Name'], usecols=[1,2])
+
+    else:
+        df['Name'] = df['ProbeID']
+        
+    if 'Name' not in df.columns:
+        df = gene_names.merge(df, how='right', on='ProbeID')
+
+    # Formatting
+    df['ProbeID'] = df['ProbeID'].str.split('.', expand=True)[0]
+    df = df.replace(np.NaN, 0)
+    add_gene_names = True
+
+    df.to_csv(path_dir+str(accessionID)+"-counts.txt", sep='\t', index=False)
+    display(df)
+
+elif experimentType == 'rna':
+    print('sep_rna_files = False: use cell blocks to use the single expression file')
+else:
+    print("experimentType = 'm': use cell blocks above for microarray")
+
+===== CELL 25 (CODE) =====
+
+debug = True
+if debug == False:
+    print('Debug = False: move onto other cells if no errors')
+elif experimentType == 'rna' and sep_rna_files == 'True' and debug == True:
+    num_rows = []
+    for i,f in enumerate(files):
+        if i < 2:
+            df1 = pd.read_csv(f,sep='\t')
+            display(df1)
+            num_rows.append(df1.shape[0])
+        else:
+            break
+            
+    df = df.merge(df1, 'outer', on='ProbeID')
+    num_rows.append(df.shape[0])
+    display(df)
+    
+    print(f'''Num rows in file 1: {num_rows[0]}\n
+            Num rows in file 2: {num_rows[1]}\n
+            Num rows in merged df: {num_rows[2]}''')
+
+elif experimentType == 'rna':
+    print('sep_rna_files = False: use cell blocks below to use the single expression file')
+else:
+    print("experimentType = 'm': use cell blocks above for microarray")
+
+===== CELL 26 (MARKDOWN) =====
+
+### Single file
+In the cell block below, manipulate the df to match the format of expr files:
+- First column "ProbeID" contains IDs (ENSG/ENST/etc.) or gene name (if ID isn't available)
+- Second column "Name" contains gene name and optional description (gene function) if provided
+- Rest of the columns should have GSM### as the column name
+
+Examples:
+- Rename columns
+
+```python
+    col_names = dict(zip(survival_df['c title'],survival_df['ArrayId']))
+    col_names['Geneid'] = 'ProbeID'
+    col_names['Gene'] = 'Name'
+    df = df.rename(columns=col_names)
+```
+
+- Get gene names (have IDs like: ENSG, ENSMUSG)
+```python
+    scaff_path = '/booleanfs2/sahoo/Data/SeqData/genome/'
+    gene_names = pd.read_csv(scaff_path+'Homo_sapiens.GRCh38.94.chr_patch_hapl_scaff.t.txt', 
+                                 sep='\t', names=['ProbeID', 'Name'], usecols=[1,2])
+    df = gene_names.merge(df, how='right', on='ProbeID')
+```
+
+- Move columns
+
+```python
+    cols = ['ProbeID','Name'] + df.columns.tolist()[2:]
+    df = df[cols]
+```
+
+===== CELL 27 (CODE) =====
+
+single_file_name = ''
+
+if single_file_name == '' and experimentType == 'rna' and sep_rna_files == 'False':
+    raise TypeError('Enter file name for single expression file on line 1')
+
+elif experimentType == 'rna' and sep_rna_files == 'False':
+    add_gene_names = False
+    df = pd.read_csv(single_file_name, sep='\t')
+    
+    # Rename columns
+    col_names = dict(zip(survival_df['c title'],survival_df['ArrayId']))
+    col_names['Geneid'] = 'ProbeID'
+    col_names['Gene'] = 'Name'
+    df = df.rename(columns=col_names)
+    
+    # Move columns
+    cols = ['ProbeID','Name'] + df.columns.tolist()[2:]
+    df = df[cols]
+    
+    df.to_csv(f"{accessionID}-counts.txt", sep='\t',index=False)
+    display(df)
+    
+elif experimentType == 'rna':
+    print('sep_rna_files = True: use cell blocks above to use the single expression file')
+else:
+    print("experimentType = 'm': use cell blocks above for microarray")
+
+===== CELL 28 (MARKDOWN) =====
+
+### Normalization, log calculations
+
+===== CELL 29 (CODE) =====
+
+print(f"norm = {norm}, takeLog = {takeLog}: if this is not correct, change the variables and rerun this code")
+
+if experimentType == 'rna':
+    expr = df.copy(deep=True)
+    expr = expr.drop(['ProbeID', 'Name'], axis=1)
+
+    adata = AnnData(expr.T)
+    if norm == 'cpm':
+        print("- Normalizing using CPM")
+        sc.pp.normalize_total(adata, target_sum=1e6)
+    if takeLog == 'True':
+        print("- Taking log2 of normalized data")
+        sc.pp.log1p(adata, base=2)
+
+    norm_df = pd.DataFrame(adata.X)
+    norm_df = norm_df.T
+
+    norm_df.insert(0, 'ProbeID', list(df['ProbeID']))
+    norm_df.insert(1, 'Name', list(df['Name']))
+    norm_df.columns = list(df.columns)
+
+    norm_df.to_csv(f"{file_prefix}-expr.txt", header=True, index=False,sep='\t')
+
+    display(norm_df)
+
+elif experimentType == 'rna':
+    print('sep_rna_files = True: use cell blocks above for separate files')
+else:
+    print("experimentType = 'm': use cell blocks above for microarray")
+
+===== CELL 30 (MARKDOWN) =====
+
+## Generate idx file
+
+===== CELL 31 (CODE) =====
+
+ptr = []
+ids = []
+name = []
+desc = []
+pos = 0
+expr_file_name = f'{accessionID}-{gpl.name}-expr.txt'
+print('- Starting idx file generationn')
+with open(expr_file_name, 'rb') as f:
+    print('- Reading bytes from', expr_file_name)
+    for line in f:
+        if pos == 0:
+            pos += len(line)
+        else:
+            ptr.append(pos)
+            pos += len(line)
+            split = line.decode("utf-8").split('\t')
+            ids.append(split[0])
+            name.append(split[1].split(':')[0])
+            desc.append(':'.join(split[1].split(':')[1:]))
+    f.close()
+
+with open(f'{accessionID}-{gpl.name}-idx.txt', 'w') as f:
+    print('- Writing idx file')
+    f.write('ProbeID\tPtr\tName\tDescription\n')
+    for i in range(len(ids)):
+        f.write('{}\t{}\t{}\t{}\n'.format(ids[i], ptr[i], name[i], desc[i]))
+    f.close()
+print('- Completed')
+
+idx = pd.read_csv(f'{accessionID}-{gpl.name}-idx.txt',sep='\t')
+idx
+
+===== CELL 32 (MARKDOWN) =====
+
+## Generate 4 other Hegemon files: bv, info, vinfo, thr
+
+===== CELL 33 (CODE) =====
+
+gse_processing = '/booleanfs2/sahoo/Data/BooleanLab/Training/GSE_Processing_scripts/jupyter_gse_processing'
+path_dir = os.getcwd()
+cwd = path_dir.split('/')[-1]
+cmd = f'bash {gse_processing} {cwd}'
+!{cmd}
+
+===== CELL 34 (MARKDOWN) =====
+
+## Resources for Help:
+- pandas.read_csv(): https://pandas.pydata.org/docs/reference/api/pandas.read_csv.html
+- pandas.DataFrame.merge(): https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.merge.html

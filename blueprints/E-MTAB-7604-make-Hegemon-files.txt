@@ -1,0 +1,136 @@
+
+
+===== CELL 1 (CODE) =====
+
+import pandas as pd
+import glob
+import scanpy as sc
+from anndata import AnnData
+import os
+
+===== CELL 2 (CODE) =====
+
+# View count files
+df = pd.read_csv('counts/GC049971.count',sep='\t',header=0,names=['Name','x'])
+df.tail(10)
+
+===== CELL 3 (CODE) =====
+
+# Option 1
+df = df.iloc[:-5,:]
+df
+
+===== CELL 4 (CODE) =====
+
+files = glob.glob('counts/*')
+print(files)
+
+===== CELL 5 (CODE) =====
+
+files[0].split('/')[1].split('.')[0]
+
+===== CELL 6 (CODE) =====
+
+files = glob.glob('counts/*')
+print('j', files)
+df = None
+for i,f in enumerate(files):
+    print(i+1,'/',len(files))
+    arr = f.split('/')[1].split('.')[0]
+    df1 = pd.read_csv(f, sep="\t", header=0,names=['ProbeID', arr])
+    df1 = df1.iloc[:-5,:]
+    if df is None:
+        df = df1
+    else:
+        if arr in df.columns:
+            df[arr] += df1[arr]
+        else:
+            df = df.merge(df1, 'outer', on='ProbeID')
+
+===== CELL 7 (CODE) =====
+
+df.insert(1,'Name',df['ProbeID'])
+df
+
+===== CELL 8 (CODE) =====
+
+# Normalizing
+expr = df.copy(deep=True)
+expr = expr.drop(['ProbeID', 'Name'], axis=1)
+
+print("Normalizing")
+adata = AnnData(expr.T)
+sc.pp.normalize_total(adata, target_sum=1e6)
+sc.pp.log1p(adata, base=2)
+
+norm_df = pd.DataFrame(adata.X)
+norm_df = norm_df.T
+
+norm_df.insert(0, 'ProbeID', list(df['ProbeID']))
+norm_df.insert(1, 'Name', list(df['Name']))
+norm_df.columns = list(df.columns)        
+
+===== CELL 9 (CODE) =====
+
+norm_df.to_csv('E-MTAB-7604-expr.txt',sep='\t',index=False)
+norm_df
+
+===== CELL 10 (CODE) =====
+
+# Survival file
+surv = pd.read_csv('E-MTAB-7604.sdrf.txt',sep='\t')
+surv['Source Name'] = surv['Source Name'].str.split('.',expand=True)[0]
+surv = surv.rename(columns={'Source Name':'ArrayId'})
+surv.columns = ['c '+x if x != 'ArrayId' else x for x in surv.columns]
+surv.insert(1,'time','')
+surv.insert(2,'status','')
+surv.to_csv('E-MTAB-7604-survival.txt',sep='\t',index=False)
+surv
+
+===== CELL 11 (CODE) =====
+
+ih = pd.read_csv('E-MTAB-7604-survival.txt',sep='\t',usecols=[0])
+ih = ih.rename(columns={'ArrayId':'ArrayID'})
+ih['ArrayHeader'] = ih['ArrayID']
+ih['ClinicalHeader'] = ih['ArrayID']
+ih.to_csv('E-MTAB-7604-ih.txt',sep='\t',index=False)
+
+ih
+
+===== CELL 12 (CODE) =====
+
+# idx file
+ptr = []
+ids = []
+name = []
+desc = []
+pos = 0
+
+with open('E-MTAB-7604-expr.txt', 'rb') as f:
+    for line in f:
+        if pos == 0:
+            pos += len(line)
+        else:
+            ptr.append(pos)
+            pos += len(line)
+            split = line.decode("utf-8").split('\t')
+            ids.append(split[0])
+            name.append(split[1].split(':')[0])
+            desc.append(':'.join(split[1].split(':')[1:]))
+    f.close()
+
+with open('E-MTAB-7604-idx.txt', 'w') as f:
+    f.write('ProbeID\tPtr\tName\tDescription\n')
+    for i in range(len(ids)):
+        f.write('{}\t{}\t{}\t{}\n'.format(ids[i], ptr[i], name[i], desc[i]))
+    f.close()
+print("Done with make_idx")
+
+===== CELL 13 (CODE) =====
+
+# Other 4 Hegemon files
+gse_processing = '/booleanfs2/sahoo/Data/BooleanLab/Training/GSE_Processing_scripts/jupyter_gse_processing'
+path_dir = os.getcwd()
+cwd = path_dir.split('/')[-1]
+cmd = f'bash {gse_processing} {cwd}'
+!{cmd}

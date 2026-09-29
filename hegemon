@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Runs the agent with the server's existing Python 3.8 venv. Nothing is installed.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+py="${HEGEMON_PYTHON:-$HOME/hegemon-agent-v0/.venv/bin/python}"
+[ -x "$py" ] || py="$(command -v python3)"
+unset PYTHONHOME PYTHONPATH
+export PYTHONNOUSERSITE=1
+exec "$py" "$here/hegemon.py" "$@"
